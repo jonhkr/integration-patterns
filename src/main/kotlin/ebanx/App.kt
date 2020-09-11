@@ -1,9 +1,9 @@
 package ebanx
 
+import java.io.IOException
+import java.util.UUID
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import java.io.IOException
-import java.util.*
 
 fun main() {
     val ledger = Ledger()
@@ -49,6 +49,22 @@ abstract class Service<I, O>(name: String) : Dump {
     }
 }
 
+enum class ConnectionBehaviour {
+    FAIL_BEFORE,
+    FAIL_AFTER,
+    SUCCEED
+}
+
+class Connection<R>(private val behaviour: ConnectionBehaviour, val fn: () -> R) {
+    fun execute(): R = when (behaviour) {
+        ConnectionBehaviour.FAIL_BEFORE -> throw IOException("Failed before")
+        ConnectionBehaviour.FAIL_AFTER -> {
+            fn()
+            throw IOException("Failed after")
+        }
+        ConnectionBehaviour.SUCCEED -> fn()
+    }
+}
 
 // Ledger
 data class DebitRequest(val accountId: Int, val amount: Int)
@@ -59,7 +75,6 @@ class Ledger : Service<DebitRequest, DebitResponse>("ledger") {
     override fun response(request: DebitRequest) = DebitResponse(UUID.randomUUID().toString())
 }
 
-
 // Payment Provider
 data class PayRequest(val amount: Int)
 data class PayResponse(val transactionId: String)
@@ -69,19 +84,24 @@ class PaymentProvider : Service<PayRequest, PayResponse>("paymentProvider") {
     override fun response(request: PayRequest) = PayResponse(UUID.randomUUID().toString())
 }
 
-
 // Payment Service
 data class PaymentRequest(val amount: Int)
 data class PaymentResponse(val id: String)
 
-class PaymentService(private val ledger: Ledger, private val paymentProvider: PaymentProvider)
-    : Service<PaymentRequest, PaymentResponse>("paymentService") {
+class PaymentService(private val ledger: Ledger, private val paymentProvider: PaymentProvider) :
+    Service<PaymentRequest, PaymentResponse>("paymentService") {
 
     fun createPayment(request: PaymentRequest): PaymentResponse = execute(request)
 
     override fun response(request: PaymentRequest): PaymentResponse {
-        ledger.debit(DebitRequest(1, request.amount))
-        paymentProvider.pay(PayRequest(request.amount))
+        Connection(ConnectionBehaviour.SUCCEED) {
+            ledger.debit(DebitRequest(1, request.amount))
+        }.execute()
+
+        Connection(ConnectionBehaviour.SUCCEED) {
+            paymentProvider.pay(PayRequest(request.amount))
+        }.execute()
+
         return PaymentResponse(UUID.randomUUID().toString())
     }
 }
