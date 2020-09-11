@@ -80,6 +80,8 @@ class PaymentService(private val ledger: Ledger, private val paymentProvider: Pa
     fun createPayment(request: PaymentRequest): PaymentResponse = execute(request)
 
     override fun response(request: PaymentRequest): PaymentResponse {
-       TODO("Implement this")
+        ledger.debit(DebitRequest(1, request.amount))
+        paymentProvider.pay(PayRequest(request.amount))
+        return PaymentResponse(UUID.randomUUID().toString())
     }
 }
