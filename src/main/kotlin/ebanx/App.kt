@@ -1,24 +1,39 @@
 package ebanx
 
 import java.io.IOException
+import java.util.Collections.emptyIterator
 import java.util.Collections.unmodifiableMap
 import java.util.UUID
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
 fun main() {
+    Connections.init(
+        ConnectionBehaviour.SUCCEED,
+        ConnectionBehaviour.FAIL_BEFORE,
+        ConnectionBehaviour.SUCCEED,
+        ConnectionBehaviour.SUCCEED
+    )
+
+    val log = logger("main")
     val ledger = Ledger()
     val provider = PaymentProvider()
     val service = PaymentService(ledger, provider, PaymentRepository())
 
     val key = UUID.randomUUID().toString()
-    try {
-        service.createPayment(PaymentRequest(key, 100))
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
 
-    dump(ledger, provider, service)
+    val repeatTimes = 2
+
+    repeat(repeatTimes) {
+        log.info("Execution {} of {}", it + 1, repeatTimes)
+        try {
+            service.createPayment(PaymentRequest(key, 100))
+        } catch (e: Exception) {
+            log.error("Failed to create payment", e)
+        }
+
+        dump(ledger, provider, service)
+    }
 }
 
 fun dump(vararg dump: Dump) {
@@ -57,6 +72,24 @@ enum class ConnectionBehaviour {
     FAIL_BEFORE,
     FAIL_AFTER,
     SUCCEED
+}
+
+object Connections {
+    private var behaviours = emptyIterator<ConnectionBehaviour>()
+
+    fun init(vararg behaviours: ConnectionBehaviour) {
+        this.behaviours = behaviours.iterator()
+    }
+
+    fun <R> execute(fn: () -> R): R {
+        val behaviour = if (behaviours.hasNext()) {
+            behaviours.next()
+        } else {
+            ConnectionBehaviour.SUCCEED
+        }
+
+        return Connection(behaviour, fn).execute()
+    }
 }
 
 class Connection<R>(private val behaviour: ConnectionBehaviour, val fn: () -> R) {
@@ -154,13 +187,8 @@ class PaymentService(
             return PaymentResponse(payment.key)
         }
 
-        Connection(ConnectionBehaviour.SUCCEED) {
-            ledger.debit(DebitRequest(payment.key, 1, request.amount))
-        }.execute()
-
-        Connection(ConnectionBehaviour.SUCCEED) {
-            paymentProvider.pay(PayRequest(payment.key, request.amount))
-        }.execute()
+        Connections.execute { ledger.debit(DebitRequest(payment.key, 1, payment.amount)) }
+        Connections.execute { paymentProvider.pay(PayRequest(payment.key, payment.amount)) }
 
         repo.save(payment.copy(status = PaymentStatus.PAID, version = payment.version + 1))
 
