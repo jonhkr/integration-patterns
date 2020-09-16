@@ -1,21 +1,61 @@
 package ebanx.events
 
 import ebanx.logger
+import org.apache.kafka.clients.consumer.Consumer
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.consumer.ConsumerRecords
+import org.apache.kafka.clients.consumer.KafkaConsumer
+import org.apache.kafka.clients.producer.KafkaProducer
+import org.apache.kafka.clients.producer.Producer
+import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.kafka.common.serialization.StringSerializer
+import java.time.Duration
+import java.util.Properties
 import java.util.UUID
+import kotlin.concurrent.thread
 
-typealias EventSubscriber = (Any) -> Unit
+const val BOOTSTRAP_SERVERS = "192.168.100.28:32773"
 
-object Events {
-    private val log = logger("broker")
-    private val subscribers = mutableListOf<(EventSubscriber)>()
-    fun subscribe(fn: EventSubscriber) {
-        log.info("Registering subscriber {}", fn)
-        subscribers.add(fn)
-    }
+fun createProducer(name: String): Producer<String, String> {
+    val properties = Properties()
+    properties[ProducerConfig.BOOTSTRAP_SERVERS_CONFIG] = BOOTSTRAP_SERVERS
+    properties[ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG] = StringSerializer::class.java.canonicalName
+    properties[ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG] = StringSerializer::class.java.canonicalName
+    properties[ProducerConfig.CLIENT_ID_CONFIG] = name
 
-    fun publish(event: Any) {
-        log.info("Publishing event {}", event)
-        subscribers.forEach { it(event) }
+    return KafkaProducer(properties)
+}
+
+fun createConsumer(name: String): Consumer<String, String> {
+    val properties = Properties()
+    properties[ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG] = BOOTSTRAP_SERVERS
+    properties[ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG] = StringDeserializer::class.java.canonicalName
+    properties[ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG] = StringDeserializer::class.java.canonicalName
+    properties[ConsumerConfig.GROUP_ID_CONFIG] = name
+    return KafkaConsumer(properties)
+}
+
+fun <K, V> runConsumer(consumer: Consumer<K, V>, fn: (ConsumerRecords<K, V>) -> Unit) {
+    thread(start = true) {
+        while (true) {
+            val records = consumer.poll(Duration.ofSeconds(1))
+
+            var retry = false
+            do {
+                retry = try {
+                    fn(records)
+                    consumer.commitSync()
+                    false
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Thread.sleep(1000)
+                    true
+                }
+            } while (retry)
+        }
     }
 }
 
@@ -23,17 +63,24 @@ data class AccountDebited(val idempotencyKey: String, val accountId: Int, val am
 
 class Ledger {
     private val log = logger("ledger")
+    private val producer = createProducer("ledger")
+    private val consumer = createConsumer("ledger")
+
     init {
-        Events.subscribe {
-            when (it) {
-                is PaymentRequested -> onPaymentRequested(it)
+        consumer.assign(listOf(TopicPartition("payments", 0)))
+
+        runConsumer(consumer) { records ->
+            records.forEach {
+                if (it.value().startsWith("PaymentRequested")) {
+                    onPaymentRequested(PaymentRequested(it.key(), it.value().split(":")[1].toInt()))
+                }
             }
         }
     }
 
     private fun onPaymentRequested(event: PaymentRequested) {
         log.info("Handling event: {}", event)
-        Events.publish(AccountDebited(event.idempotencyKey, 1, event.amount))
+        producer.send(ProducerRecord("payments", event.idempotencyKey, "AccountDebited:1:${event.amount}"))
     }
 }
 
@@ -42,23 +89,35 @@ data class PayConfirmed(val idempotencyKey: String, val amount: Int)
 
 class PaymentProvider {
     private val log = logger("paymentProvider")
+    private val producer = createProducer("paymentProvider")
+    private val consumer = createConsumer("paymentProvider")
+
     init {
-        Events.subscribe {
-            when (it) {
-                is AccountDebited -> onAccountDebited(it)
-                is PayRequested -> onPayRequested(it)
+        consumer.assign(listOf(TopicPartition("payments", 0)))
+
+        runConsumer(consumer) { records ->
+            records.forEach {
+                if (it.value().startsWith("AccountDebited")) {
+                    val params = it.value().split(":")
+                    onAccountDebited(AccountDebited(it.key(), params[1].toInt(), params[2].toInt()))
+                }
+
+                if (it.value().startsWith("PayRequested")) {
+                    val params = it.value().split(":")
+                    onPayRequested(PayRequested(it.key(), params[1].toInt()))
+                }
             }
         }
     }
 
     private fun onPayRequested(event: PayRequested) {
         log.info("Handling event: {}", event)
-        Events.publish(PayConfirmed(event.idempotencyKey, event.amount))
+        producer.send(ProducerRecord("payments", event.idempotencyKey, "PayConfirmed:${event.amount}"))
     }
 
     private fun onAccountDebited(event: AccountDebited) {
         log.info("Handling event: {}", event)
-        Events.publish(PayRequested(event.idempotencyKey, event.amount))
+        producer.send(ProducerRecord("payments", event.idempotencyKey, "PayRequested:${event.amount}"))
     }
 }
 
@@ -67,16 +126,32 @@ data class PaymentRequested(val idempotencyKey: String, val amount: Int)
 
 class PaymentService {
     private val log = logger("paymentService")
+    private val producer = createProducer("paymentService")
+    private val consumer = createConsumer("paymentService")
+
     init {
-        Events.subscribe {
-            when (it) {
-                is PayConfirmed -> log.info("Handling event: {}", it)
+        consumer.assign(listOf(TopicPartition("payments", 0)))
+
+        runConsumer(consumer) { records ->
+            records.forEach {
+                if (it.value().startsWith("PayConfirmed")) {
+                    println(it.offset())
+                    val params = it.value().split(":")
+                    onPayConfirmed(PayConfirmed(it.key(), params[1].toInt()))
+                }
             }
         }
     }
 
+    private fun onPayConfirmed(event: PayConfirmed) {
+        if (Math.random() >= 0.8) {
+            throw RuntimeException("Failed")
+        }
+        log.info("Handling event: {}", event)
+    }
+
     fun createPayment(request: PaymentRequest) {
-        Events.publish(PaymentRequested(request.idempotencyKey, request.amount))
+        producer.send(ProducerRecord("payments", request.idempotencyKey, "PaymentRequested:${request.amount}"))
     }
 }
 
@@ -85,6 +160,10 @@ fun main() {
     PaymentProvider()
     val service = PaymentService()
 
-    val key = UUID.randomUUID().toString()
-    service.createPayment(PaymentRequest(key, 100))
+    while (true) {
+        val key = UUID.randomUUID().toString()
+        service.createPayment(PaymentRequest(key, 100))
+
+        Thread.sleep(1000)
+    }
 }

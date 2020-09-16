@@ -35,6 +35,9 @@ dependencies {
     implementation(Libs.logbackClassic)
     implementation(Libs.kotlinStdlib)
     implementation(Libs.kotlinStdlibJdk8)
+    implementation(Libs.kafkaClients)
+    implementation(Libs.jacksonDatabind)
+
     testImplementation(Libs.junitApi)
     testImplementation(Libs.junitEngine)
 }
