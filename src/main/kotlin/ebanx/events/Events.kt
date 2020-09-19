@@ -3,7 +3,7 @@ package ebanx.events
 import ebanx.logger
 import org.apache.kafka.clients.consumer.Consumer
 import org.apache.kafka.clients.consumer.ConsumerConfig
-import org.apache.kafka.clients.consumer.ConsumerRecords
+import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.Producer
@@ -17,7 +17,7 @@ import java.util.Properties
 import java.util.UUID
 import kotlin.concurrent.thread
 
-const val BOOTSTRAP_SERVERS = "192.168.100.28:32773"
+const val BOOTSTRAP_SERVERS = "192.168.100.28:9092"
 
 fun createProducer(name: String): Producer<String, String> {
     val properties = Properties()
@@ -38,23 +38,22 @@ fun createConsumer(name: String): Consumer<String, String> {
     return KafkaConsumer(properties)
 }
 
-fun <K, V> runConsumer(consumer: Consumer<K, V>, fn: (ConsumerRecords<K, V>) -> Unit) {
+fun <K, V> runConsumer(consumer: Consumer<K, V>, fn: (ConsumerRecord<K, V>) -> Unit) {
     thread(start = true) {
         while (true) {
             val records = consumer.poll(Duration.ofSeconds(1))
 
-            var retry = false
-            do {
-                retry = try {
-                    fn(records)
-                    consumer.commitSync()
-                    false
+            for (record in records) {
+                try {
+                    fn(record)
                 } catch (e: Exception) {
                     e.printStackTrace()
                     Thread.sleep(1000)
-                    true
+                    consumer.seek(TopicPartition(record.topic(), record.partition()), record.offset())
+
+                    break
                 }
-            } while (retry)
+            }
         }
     }
 }
@@ -67,13 +66,11 @@ class Ledger {
     private val consumer = createConsumer("ledger")
 
     init {
-        consumer.assign(listOf(TopicPartition("payments", 0)))
+        consumer.subscribe(listOf("payments"))
 
-        runConsumer(consumer) { records ->
-            records.forEach {
-                if (it.value().startsWith("PaymentRequested")) {
-                    onPaymentRequested(PaymentRequested(it.key(), it.value().split(":")[1].toInt()))
-                }
+        runConsumer(consumer) {
+            if (it.value().startsWith("PaymentRequested")) {
+                onPaymentRequested(PaymentRequested(it.key(), it.value().split(":")[1].toInt()))
             }
         }
     }
@@ -93,19 +90,17 @@ class PaymentProvider {
     private val consumer = createConsumer("paymentProvider")
 
     init {
-        consumer.assign(listOf(TopicPartition("payments", 0)))
+        consumer.subscribe(listOf("payments"))
 
-        runConsumer(consumer) { records ->
-            records.forEach {
-                if (it.value().startsWith("AccountDebited")) {
-                    val params = it.value().split(":")
-                    onAccountDebited(AccountDebited(it.key(), params[1].toInt(), params[2].toInt()))
-                }
+        runConsumer(consumer) {
+            if (it.value().startsWith("AccountDebited")) {
+                val params = it.value().split(":")
+                onAccountDebited(AccountDebited(it.key(), params[1].toInt(), params[2].toInt()))
+            }
 
-                if (it.value().startsWith("PayRequested")) {
-                    val params = it.value().split(":")
-                    onPayRequested(PayRequested(it.key(), params[1].toInt()))
-                }
+            if (it.value().startsWith("PayRequested")) {
+                val params = it.value().split(":")
+                onPayRequested(PayRequested(it.key(), params[1].toInt()))
             }
         }
     }
@@ -130,23 +125,21 @@ class PaymentService {
     private val consumer = createConsumer("paymentService")
 
     init {
-        consumer.assign(listOf(TopicPartition("payments", 0)))
+        consumer.subscribe(listOf("payments"))
 
-        runConsumer(consumer) { records ->
-            records.forEach {
-                if (it.value().startsWith("PayConfirmed")) {
-                    println(it.offset())
-                    val params = it.value().split(":")
-                    onPayConfirmed(PayConfirmed(it.key(), params[1].toInt()))
-                }
+        runConsumer(consumer) {
+            if (it.value().startsWith("PayConfirmed")) {
+                println(it.offset())
+                val params = it.value().split(":")
+                onPayConfirmed(PayConfirmed(it.key(), params[1].toInt()))
             }
         }
     }
 
     private fun onPayConfirmed(event: PayConfirmed) {
-        if (Math.random() >= 0.8) {
-            throw RuntimeException("Failed")
-        }
+        // if (Math.random() >= 0.8) {
+        //     throw RuntimeException("Failed")
+        // }
         log.info("Handling event: {}", event)
     }
 
