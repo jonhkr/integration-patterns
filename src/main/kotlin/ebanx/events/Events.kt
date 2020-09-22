@@ -41,19 +41,21 @@ fun createConsumer(name: String): Consumer<String, String> {
 fun <K, V> runConsumer(consumer: Consumer<K, V>, fn: (ConsumerRecord<K, V>) -> Unit) {
     thread(start = true) {
         while (true) {
-            val records = consumer.poll(Duration.ofSeconds(1))
+            consumer.poll(Duration.ofSeconds(1))
+                .groupBy { "${it.topic()}:${it.partition()}" }
+                .forEach { (_, records) ->
+                    for (record in records) {
+                        try {
+                            fn(record)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            Thread.sleep(1000)
+                            consumer.seek(TopicPartition(record.topic(), record.partition()), record.offset())
 
-            for (record in records) {
-                try {
-                    fn(record)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    Thread.sleep(1000)
-                    consumer.seek(TopicPartition(record.topic(), record.partition()), record.offset())
-
-                    break
+                            break
+                        }
+                    }
                 }
-            }
         }
     }
 }
