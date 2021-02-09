@@ -4,6 +4,8 @@ object Versions {
     const val junit = "5.6.2"
     const val slf4j = "1.7.30"
     const val logback = "1.2.3"
+    const val kafka = "2.6.0"
+    const val jackson = "2.11.2"
 }
 
 object Libs {
@@ -13,5 +15,6 @@ object Libs {
     const val kotlinStdlibJdk8 = "org.jetbrains.kotlin:kotlin-stdlib-jdk8:${Versions.kotlin}"
     const val junitApi = "org.junit.jupiter:junit-jupiter-api:${Versions.junit}"
     const val junitEngine = "org.junit.jupiter:junit-jupiter-engine:${Versions.junit}"
-
+    const val kafkaClients = "org.apache.kafka:kafka-clients:${Versions.kafka}"
+    const val jacksonDatabind = "com.fasterxml.jackson.core:jackson-databind:${Versions.jackson}"
 }
